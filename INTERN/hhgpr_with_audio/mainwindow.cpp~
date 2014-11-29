@@ -1,0 +1,449 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/mount.h>
+#include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <termios.h>
+#include <fstream>
+#include <iostream>
+#include <sched.h>
+#include <getopt.h>
+#include "/usr/include/alsa/asoundlib.h"
+#include <math.h>
+#define MAP_SIZE 4096
+#define MAP_MASK (MAP_SIZE-1)
+#define INTERVAL 32000
+using namespace std;
+
+off_t target = 0x08000000;
+int howmany=0;
+int howmany_fpga = 0;
+int    j_fpga;
+int   devmem_fpga;
+off_t PageOffset_fpga, PageAddress_fpga;
+unsigned long *hw_addr_fpga = (unsigned long *) 0x08000000;
+unsigned long  read_data_fpga;
+
+
+
+
+
+
+
+
+
+void alarm_wakeup(int i)
+{
+signal(SIGALRM,alarm_wakeup);
+   printf("%d sec up partner, Wakeup!!!\n",INTERVAL);
+}
+
+void alarm_wakeup_2 (int i)
+{
+   struct itimerval tout_val;
+
+   signal(SIGALRM,alarm_wakeup_2);
+
+   howmany += 32000;
+
+   printf("\n%d sec up partner, Wakeup!!!\n",howmany);
+   tout_val.it_interval.tv_sec = 0;
+   tout_val.it_interval.tv_usec = 0;
+   tout_val.it_value.tv_sec = 0; // 10 seconds timer
+   tout_val.it_value.tv_usec = 32000;
+
+   setitimer(ITIMER_REAL, &tout_val,0);
+
+}
+
+void exit_func (int i)
+{
+    signal(SIGINT,exit_func);
+    printf("\nBye Bye!!!\n");
+    exit(0);
+}
+
+char *get_timestamp()
+
+{
+
+  time_t now = time (NULL);
+
+  return asctime (localtime (&now));
+
+}
+
+
+
+//////////////////
+
+
+Window1::Window1(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::Window1)
+{
+    ui->setupUi(this);
+
+    connect(ui->button, SIGNAL(clicked()), SIGNAL(showOtherWindow()));
+    connect(ui->button_1, SIGNAL(clicked()), SIGNAL(NEW()));
+    connect(ui->button_3, SIGNAL(clicked()), SIGNAL(mmcmount()));
+    connect(ui->button_5, SIGNAL(clicked()), SIGNAL(serial123()));
+    connect(ui->button_6, SIGNAL(clicked()), SIGNAL(serialread()));
+    connect(ui->button_7, SIGNAL(clicked()), SIGNAL(system_1()));
+    connect(ui->button_10, SIGNAL(clicked()), SIGNAL(usbmount()));
+    connect(ui->button_11, SIGNAL(clicked()), SIGNAL(volt()));
+
+   }
+
+
+//////////////
+void Window1::NEWF()
+{
+    struct option long_option[] =
+    {
+    {"help", 0, NULL, 'h'},
+    {"device", 1, NULL, 'D'},
+    {"rate", 1, NULL, 'r'},
+    {"channels", 1, NULL, 'c'},
+    {"frequency", 1, NULL, 'f'},
+    {"buffer", 1, NULL, 'b'},
+    {"period", 1, NULL, 'p'},
+    {"method", 1, NULL, 'm'},
+    {"format", 1, NULL, 'o'},
+    {"verbose", 1, NULL, 'v'},
+    {"noresample", 1, NULL, 'n'},
+    {"pevent", 1, NULL, 'e'},
+    {NULL, 0, NULL, 0},
+    };
+    snd_pcm_t *handle;
+    int err, morehelp;
+    snd_pcm_hw_params_t *hwparams;
+    snd_pcm_sw_params_t *swparams;
+    int method = 0;
+    signed short *samples;
+    unsigned int chn;
+    snd_pcm_channel_area_t *areas;
+    snd_pcm_hw_params_alloca(&hwparams);
+    snd_pcm_sw_params_alloca(&swparams);
+    morehelp = 0;
+   /* while (1) {
+    int c;
+    //if ((c = getopt_long(argc, argv, "hD:r:c:f:b:p:m:o:vne", long_option, NULL)) < 0)
+    //break;
+    switch (c) {
+    case 'h':
+    morehelp++;
+    break;
+    case 'D':
+    device = strdup(optarg);
+    break;
+    case 'r':
+    rate = atoi(optarg);
+    rate = rate < 4000 ? 4000 : rate;
+    rate = rate > 196000 ? 196000 : rate;
+    break;
+    case 'c':
+    channels = atoi(optarg);
+    channels = channels < 1 ? 1 : channels;
+    channels = channels > 1024 ? 1024 : channels;
+    break;
+    case 'f':
+    freq = atoi(optarg);
+    freq = freq < 50 ? 50 : freq;
+    freq = freq > 5000 ? 5000 : freq;
+    break;
+    case 'b':
+    buffer_time = atoi(optarg);
+    buffer_time = buffer_time < 1000 ? 1000 : buffer_time;
+    buffer_time = buffer_time > 1000000 ? 1000000 : buffer_time;
+    break;
+    case 'p':
+    period_time = atoi(optarg);
+    period_time = period_time < 1000 ? 1000 : period_time;
+    period_time = period_time > 1000000 ? 1000000 : period_time;
+    break;
+    case 'm':
+    for (method = 0; transfer_methods[method].name; method++)
+    if (!strcasecmp(transfer_methods[method].name, optarg))
+    break;
+    if (transfer_methods[method].name == NULL)
+    method = 0;
+    break;
+    /*case 'o':
+    for (format = 0; format < SND_PCM_FORMAT_LAST; format++) {
+    const char *format_name = snd_pcm_format_name(format);
+    if (format_name)
+    if (!strcasecmp(format_name, optarg))
+    break;
+    }
+    if (format == SND_PCM_FORMAT_LAST)
+    format = SND_PCM_FORMAT_S16;
+    if (!snd_pcm_format_linear(format) &&
+    !(format == SND_PCM_FORMAT_FLOAT_LE ||
+    format == SND_PCM_FORMAT_FLOAT_BE)) {
+    printf("Invalid (non-linear/float) format %s\n",
+    optarg);
+    return 1;
+    }
+    break;
+    case 'v':
+    verbose = 1;
+    break;
+    case 'n':
+    resample = 0;
+    break;
+    case 'e':
+    period_event = 1;
+    break;
+    }
+    }
+    end */
+    if (morehelp) {
+    help();
+    //return 0;
+    }
+    err = snd_output_stdio_attach(&output, stdout, 0);
+    if (err < 0) {
+    printf("Output failed: %s\n", snd_strerror(err));
+    //return 0;
+    }
+    printf("Playback device is %s\n", device);
+    printf("Stream parameters are %iHz, %s, %i channels\n", rate, snd_pcm_format_name(format), channels);
+    printf("Sine wave rate is %.4fHz\n", freq);
+    printf("Using transfer method: %s\n", transfer_methods[method].name);
+    if ((err = snd_pcm_open(&handle, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0) {
+    printf("Playback open error: %s\n", snd_strerror(err));
+    //return 0;
+    }
+    if ((err = set_hwparams(handle, hwparams, transfer_methods[method].access)) < 0) {
+    printf("Setting of hwparams failed: %s\n", snd_strerror(err));
+    exit(EXIT_FAILURE);
+    }
+    if ((err = set_swparams(handle, swparams)) < 0) {
+    printf("Setting of swparams failed: %s\n", snd_strerror(err));
+    exit(EXIT_FAILURE);
+    }
+    if (verbose > 0)
+    snd_pcm_dump(handle, output);
+    samples = (signed short*)malloc((period_size * channels * snd_pcm_format_physical_width(format)) / 8);
+    if (samples == NULL) {
+    printf("No enough memory\n");
+    exit(EXIT_FAILURE);
+    }
+    areas = (snd_pcm_channel_area_t*)calloc(channels, sizeof(snd_pcm_channel_area_t));
+    if (areas == NULL) {
+    printf("No enough memory\n");
+    exit(EXIT_FAILURE);
+    }
+    for (chn = 0; chn < channels; chn++) {
+    areas[chn].addr = samples;
+    areas[chn].first = chn * snd_pcm_format_physical_width(format);
+    areas[chn].step = channels * snd_pcm_format_physical_width(format);
+    }
+    err = transfer_methods[method].transfer_loop(handle, samples, areas);
+    if (err < 0)
+    printf("Transfer failed: %s\n", snd_strerror(err));
+    free(areas);
+    free(samples);
+    snd_pcm_close(handle);
+
+}
+
+void Window1::mmc_mount()
+{ cout<<"give filename to which to append the timestamp\n";
+    string filename ;
+    cin >> filename;
+    mount("/dev/mmcblk0p3", "/mnt/mmcblk0p3", "ext3", MS_MGC_VAL | MS_NOSUID, "");
+
+          char* timestamp = get_timestamp ();
+
+          // Open the file for writing. If it exists, append to it;
+
+            // otherwise, create a new file.
+
+          int fd = open (filename.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0666);
+
+          // Compute the length of the timestamp string.
+
+          size_t length = strlen (timestamp);
+
+          // Write the timestamp to the file.
+
+          write (fd, timestamp, length);
+
+          //All done.
+
+          ::close (fd);
+
+
+
+}
+
+
+
+void Window1::serial_read()
+{
+    int fd = open("/dev/ttymxc0", O_RDWR | O_NOCTTY);
+            if (fd == -1)
+            {
+                // Could not open the port.
+                perror("open_port: Unable to open /dev/ttyS0 - ");
+            }
+
+            char buffer[32];
+            int n = read(fd, buffer, sizeof(buffer));
+            if (n < 0)
+                fputs("read failed!\n", stderr);
+            printf("Data read is %d", n);
+}
+
+
+void Window1::serial_123()
+{
+ int fd; // File descriptor for the port
+  int n;
+
+  fd = open("/dev/ttymxc0", O_RDWR | O_NOCTTY | O_NDELAY);
+  if (fd == -1)
+  {
+   //Could not open the port.
+    perror("open_port: Unable to open /dev/ttyS0 - ");
+  }
+  else
+    fcntl(fd, F_SETFL, 0);
+
+  n = write(fd, "ATZ\r", 4);
+  if (n < 0)
+    fputs("write() of 4 bytes failed!\n", stderr);
+}
+
+
+
+void Window1::command_line()
+{
+cout<<"give filename\n";
+string s ;
+cin >> s;
+//getline(cin,s);
+ ifstream the_file;
+the_file.open(s.c_str());
+    // Always check to see if file opening succeeded
+    if ( !the_file.is_open() )
+      cout<<"Could not open file\n";
+    else {
+      char x;
+      // the_file.get ( x ) returns false if the end of the file
+      //  is reached or an error occurs
+      while ( the_file.get ( x ) )
+        cout<< x;
+    }
+
+}
+
+void Window1::usb_mount()
+{
+cout<<"give filename to which to append the timestamp\n";
+string filename ;
+cin >> filename;
+mount("/dev/sda1", "/mnt/transcend", "vfat", MS_MGC_VAL | MS_NOSUID, "");
+
+      char* timestamp = get_timestamp ();
+
+      // Open the file for writing. If it exists, append to it;
+
+        // otherwise, create a new file.
+
+      int fd = open (filename.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0666);
+
+      // Compute the length of the timestamp string.
+
+      size_t length = strlen (timestamp);
+
+      // Write the timestamp to the file.
+
+      write (fd, timestamp, length);
+
+      //All done.
+
+      ::close (fd);
+
+
+
+
+}
+
+void Window1::system1()
+{
+   char command[50];
+    char command_1[50];
+   //strcpy( command, "ls -l" );
+   strcpy(command, "gplay /mnt/transcend/audio_1.mp4" );
+   system(command);
+
+   int   i, j;
+   int   words = 10;
+   int   devmem;
+   off_t PageOffset, PageAddress;
+
+   unsigned long *hw_addr = (unsigned long *) 0x08000000;
+   unsigned long  read_data;
+
+   devmem = open("/dev/mem", O_RDWR | O_SYNC);
+   PageOffset = (off_t) hw_addr % getpagesize();
+   PageAddress = (off_t) (hw_addr - PageOffset);
+
+   hw_addr = (unsigned long *) mmap(0, 4, PROT_READ|PROT_WRITE, MAP_SHARED, devmem, PageAddress);
+
+   for (i = 0, j = 0; i < words; i++, j+=4)
+   {
+       printf("Writing to hardware model\n");
+
+       *(hw_addr+j) = 0xabcd0000+j;
+
+       read_data = *(hw_addr+j);
+
+       printf("Read from hardware %x\n",read_data);
+
+   }
+}
+
+
+
+//////////////////////////
+
+Window1::~Window1()
+{
+    delete ui;
+}
+
+Window2::Window2(QWidget *parent) :    QMainWindow(parent),    ui(new Ui::Window2)
+{if ((i2c = open("/dev/i2c-1",O_RDWR)) < 0)
+    {
+        qDebug()<<"Failed to open the bus.";
+        return;
+    }
+
+    if (ioctl(i2c,I2C_SLAVE,addr) < 0)
+    {
+        qDebug()<<"Failed to acquire bus access and/or talk to slave.\n";
+        return;
+    }
+    ui->setupUi(this);
+
+
+}
+
+Window2::~Window2()
+{
+    delete ui;
+}
+
+
